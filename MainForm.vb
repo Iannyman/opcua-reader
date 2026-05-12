@@ -4,12 +4,16 @@ Imports Newtonsoft.Json
 Imports Opc.Ua
 Public Class MainForm
 
-    Private _manager As New OpcUaManager()
+    Private _manager As OpcUaManager
+    Private _logger As FileLogger
     Private ReadOnly _serverContent As New Dictionary(Of String, ServerTabContent)()
     Private _sqlService As SqlService
     Private _sqlConnected As Boolean = False
 
     Private Sub MainForm_Load(sender As Object, e As EventArgs) Handles Me.Load
+        _logger = New FileLogger()
+        _manager = New OpcUaManager(_logger)
+
         Me.Icon = New Icon(IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "icon.ico"))
 
         ' Dark "Neon Industrial" color scheme
@@ -96,8 +100,8 @@ Public Class MainForm
             SetServerConnected(serverName, True)
             lblStatus.Text = $"{serverName}: Connected"
         Catch ex As Exception
+            _logger?.Log(serverName, $"Connect failed: {ex.Message}")
             MessageBox.Show($"{serverName} connect failed: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error)
-            lblStatus.Text = $"{serverName}: Connection failed"
             c.btnConnect.Enabled = True
         End Try
     End Sub
@@ -111,6 +115,7 @@ Public Class MainForm
             SetServerConnected(serverName, False)
             lblStatus.Text = $"{serverName}: Disconnected"
         Catch ex As Exception
+            _logger?.Log(serverName, $"Disconnect failed: {ex.Message}")
             MessageBox.Show($"{serverName} disconnect failed: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error)
             lblStatus.Text = $"{serverName}: Disconnect failed"
             c.btnDisconnect.Enabled = True
@@ -128,6 +133,7 @@ Public Class MainForm
             SetServerConnected(serverName, True)
             lblStatus.Text = $"{serverName}: Reconnected"
         Catch ex As Exception
+            _logger?.Log(serverName, $"Reconnect failed: {ex.Message}")
             MessageBox.Show($"{serverName} reconnect failed: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error)
             SetServerConnected(serverName, False)
             lblStatus.Text = $"{serverName}: Reconnect failed"
@@ -295,10 +301,12 @@ Public Class MainForm
 
         Dim timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
         log.AddItem($"[{timestamp}] Read data triggerd:")
+        _logger?.Log(serverName, "Read data triggered:")
 
         For Each kvp In readValues
             Dim valueText As String = If(kvp.Value?.Value?.ToString(), "(null)")
             log.AddItem($"  {kvp.Key}: {valueText}")
+            _logger?.Log(serverName, $"  {kvp.Key}: {valueText}")
         Next
 
         For i As Integer = 0 To dgvOverview.Rows.Count - 1
@@ -344,11 +352,16 @@ Public Class MainForm
         Dim log = _serverContent(serverName).logList
         Dim timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
         log.AddItem($"[{timestamp}] {message}")
+        _logger?.Log(serverName, message)
     End Sub
 
     Private Async Sub MainForm_FormClosing(sender As Object, e As FormClosingEventArgs) Handles Me.FormClosing
         Try
             Await _manager.DisconnectAllAsync()
+        Catch
+        End Try
+        Try
+            _logger?.Dispose()
         Catch
         End Try
     End Sub

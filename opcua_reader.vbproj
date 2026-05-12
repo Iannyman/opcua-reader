@@ -181,6 +181,7 @@
     <Compile Include="Controls\ThemedListBox.vb">
       <SubType>UserControl</SubType>
     </Compile>
+    <Compile Include="Core\FileLogger.vb" />
     <Compile Include="Core\OpcUaConnection.vb" />
     <Compile Include="Core\OpcUaManager.vb" />
     <Compile Include="Core\SqlService.vb" />
