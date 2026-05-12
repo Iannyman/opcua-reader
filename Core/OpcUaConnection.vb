@@ -9,6 +9,7 @@ Public Class OpcUaConnection
     Private _config As ApplicationConfiguration
     Private _subscription As Subscription
     Private _isReconnecting As Boolean = False
+    Private ReadOnly _logger As FileLogger
 
     Public Property ServerConfig As ServerConfig
     Public Property IsConnected As Boolean = False
@@ -17,8 +18,16 @@ Public Class OpcUaConnection
     Public Event ConnectionLost(serverName As String)
     Public Event ConnectionRestored(serverName As String)
 
-    Public Sub New(serverConfig As ServerConfig)
+    Public Sub New(serverConfig As ServerConfig, logger As FileLogger)
         Me.ServerConfig = serverConfig
+        _logger = logger
+    End Sub
+
+    Private Sub Log(message As String)
+        Try
+            _logger?.Log(ServerConfig.Name, message)
+        Catch
+        End Try
     End Sub
 
     ' ─────────────────────────────────────────
@@ -73,8 +82,10 @@ Public Class OpcUaConnection
         If IsConnected Then
             _session.KeepAliveInterval = 5000
             AddHandler _session.KeepAlive, AddressOf OnKeepAlive
+            Log($"Connected to {ServerConfig.EndpointUrl}")
             Await CheckTriggerInitialStateAsync()
             Await SetupSubscriptionAsync()
+            Log($"Subscription created: trigger={ServerConfig.TriggerNodeId}, interval=500ms")
         End If
     End Function
 
@@ -105,7 +116,7 @@ Public Class OpcUaConnection
                 End If
             End If
         Catch ex As Exception
-            Console.WriteLine($"[{ServerConfig.Name}] Initial trigger check error: {ex.Message}")
+            Log($"Initial trigger check error: {ex.Message}")
         End Try
     End Function
 
@@ -168,13 +179,13 @@ Public Class OpcUaConnection
                                  ' WriteTriggerResetAsync is commented out to avoid BadTypeMismatch errors while debugging.
                                  ' Await WriteTriggerResetAsync()
                              Catch ex As Exception
-                                 Console.WriteLine($"[{ServerConfig.Name}] Trigger handler error: {ex.Message}")
+                                 Log($"Trigger handler error: {ex.Message}")
                              End Try
                          End Function)
             End If
 
         Catch ex As Exception
-            Console.WriteLine($"[{ServerConfig.Name}] Notification error: {ex.Message}")
+            Log($"Notification error: {ex.Message}")
         End Try
     End Sub
 
@@ -231,14 +242,14 @@ Public Class OpcUaConnection
 
             If response IsNot Nothing AndAlso response.Results IsNot Nothing AndAlso response.Results.Count > 0 Then
                 If StatusCode.IsGood(response.Results(0)) Then
-                    Console.WriteLine($"[{ServerConfig.Name}] Trigger reset to 0.")
+                    Log("Trigger reset to 0.")
                 Else
-                    Console.WriteLine($"[{ServerConfig.Name}] Reset failed: {response.Results(0)}")
+                    Log($"Reset failed: {response.Results(0)}")
                 End If
             End If
 
         Catch ex As Exception
-            Console.WriteLine($"[{ServerConfig.Name}] Write error: {ex.Message}")
+            Log($"Write error: {ex.Message}")
         End Try
     End Function
 
@@ -321,7 +332,7 @@ Public Class OpcUaConnection
                     _subscription.PublishingEnabled = False
                     Await _subscription.ApplyChangesAsync()
                 Catch exPub As Exception
-                    Console.WriteLine($"[{ServerConfig.Name}] Failed to disable publishing: {exPub}")
+                    Log($"Failed to disable publishing: {exPub}")
                 End Try
 
                 Try
@@ -329,9 +340,9 @@ Public Class OpcUaConnection
                 Catch ex As TaskCanceledException
                     ' ignore cancellation during shutdown
                 Catch ex As ServiceResultException
-                    Console.WriteLine($"[{ServerConfig.Name}] Subscription delete error: {ex}")
+                    Log($"Subscription delete error: {ex}")
                 Catch ex As Exception
-                    Console.WriteLine($"[{ServerConfig.Name}] Subscription delete error: {ex}")
+                    Log($"Subscription delete error: {ex}")
                 Finally
                     Try
                         _subscription.Dispose()
@@ -347,9 +358,9 @@ Public Class OpcUaConnection
                 Catch ex As TaskCanceledException
                     ' ignore cancellation during shutdown
                 Catch ex As ServiceResultException
-                    Console.WriteLine($"[{ServerConfig.Name}] Session close error: {ex}")
+                    Log($"Session close error: {ex}")
                 Catch ex As Exception
-                    Console.WriteLine($"[{ServerConfig.Name}] Session close error: {ex}")
+                    Log($"Session close error: {ex}")
                 Finally
                     Try
                         _session.Dispose()
@@ -359,7 +370,7 @@ Public Class OpcUaConnection
                 End Try
             End If
         Catch ex As Exception
-            Console.WriteLine($"[{ServerConfig.Name}] Disconnect error: {ex}")
+            Log($"Disconnect error: {ex}")
         Finally
             IsConnected = False
         End Try

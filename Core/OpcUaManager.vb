@@ -5,13 +5,18 @@ Imports Opc.Ua.Client
 Public Class OpcUaManager
 
     Private _connections As New Dictionary(Of String, OpcUaConnection)()
+    Private ReadOnly _logger As FileLogger
+
+    Public Sub New(logger As FileLogger)
+        _logger = logger
+    End Sub
 
     Public Event DataTriggered(serverName As String, readValues As Dictionary(Of String, DataValue))
     Public Event ConnectionLost(serverName As String)
     Public Event ConnectionRestored(serverName As String)
 
     Public Sub AddServer(config As ServerConfig)
-        Dim conn = New OpcUaConnection(config)
+        Dim conn = New OpcUaConnection(config, _logger)
         AddHandler conn.DataTriggered, AddressOf OnConnectionDataTriggered
         AddHandler conn.ConnectionLost, Sub(name) RaiseEvent ConnectionLost(name)
         AddHandler conn.ConnectionRestored, Sub(name) RaiseEvent ConnectionRestored(name)
@@ -33,7 +38,7 @@ Public Class OpcUaManager
             Try
                 Await c.ConnectAsync()
             Catch ex As Exception
-                Console.WriteLine($"[{c.ServerConfig.Name}] Connect error: {ex}")
+                _logger?.Log(c.ServerConfig.Name, $"Connect error: {ex}")
                 exceptions.Add(ex)
             End Try
         Next
@@ -48,7 +53,7 @@ Public Class OpcUaManager
             Try
                 Await c.DisconnectAsync()
             Catch ex As Exception
-                Console.WriteLine($"[{c.ServerConfig.Name}] Disconnect error: {ex}")
+                _logger?.Log(c.ServerConfig.Name, $"Disconnect error: {ex}")
                 exceptions.Add(ex)
             End Try
         Next
