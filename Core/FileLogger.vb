@@ -12,21 +12,24 @@ Public Class FileLogger
         Private _currentDate As Date
         Private ReadOnly _logDirectory As String
 
+        Private _dirOk As Boolean = False
+
         Public Sub New(baseLogPath As String, serverName As String)
-            _logDirectory = Path.Combine(baseLogPath, SanitizeFolderName(serverName))
+            _logDirectory = System.IO.Path.Combine(baseLogPath, SanitizeFolderName(serverName))
             Try
-                Directory.CreateDirectory(_logDirectory)
+                System.IO.Directory.CreateDirectory(_logDirectory)
+                _dirOk = True
+                EnsureWriter()
             Catch
             End Try
-            EnsureWriter()
         End Sub
 
         Private Shared Function SanitizeFolderName(name As String) As String
             Dim sb As New StringBuilder(name)
-            For Each c In Path.GetInvalidFileNameChars()
+            For Each c In System.IO.Path.GetInvalidFileNameChars()
                 sb.Replace(c, "_"c)
             Next
-            For Each c In Path.GetInvalidPathChars()
+            For Each c In System.IO.Path.GetInvalidPathChars()
                 sb.Replace(c, "_"c)
             Next
             Dim result = sb.ToString().Trim()
@@ -47,7 +50,7 @@ Public Class FileLogger
                     End Try
                 End If
                 Dim fileName = today.ToString("yyyy-MM-dd") & ".log"
-                Dim fullPath = Path.Combine(_logDirectory, fileName)
+                Dim fullPath = System.IO.Path.Combine(_logDirectory, fileName)
                 _writer = New StreamWriter(fullPath, append:=True, encoding:=Encoding.UTF8) With {
                     .AutoFlush = False
                 }
@@ -56,6 +59,7 @@ Public Class FileLogger
         End Sub
 
         Public Sub WriteEntry(message As String)
+            If Not _dirOk Then Return
             SyncLock _lock
                 Try
                     EnsureWriter()
@@ -87,9 +91,9 @@ Public Class FileLogger
     Private _cleanupTimer As System.Timers.Timer
 
     Public Sub New()
-        _baseLogPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Logs")
+        _baseLogPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Logs")
         Try
-            Directory.CreateDirectory(_baseLogPath)
+            System.IO.Directory.CreateDirectory(_baseLogPath)
             CleanupOldLogs()
         Catch
         End Try
@@ -102,19 +106,18 @@ Public Class FileLogger
     Private Sub CleanupOldLogs()
         Try
             Dim cutoff = Date.Now.AddDays(-30)
-            For Each dir In Directory.GetDirectories(_baseLogPath)
-                For Each file In Directory.GetFiles(dir, "*.log")
-                    If File.GetLastWriteTime(file) < cutoff Then
+            For Each logDir In System.IO.Directory.GetDirectories(_baseLogPath)
+                For Each logFile In System.IO.Directory.GetFiles(logDir, "*.log")
+                    If System.IO.File.GetLastWriteTime(logFile) < cutoff Then
                         Try
-                            File.Delete(file)
+                            System.IO.File.Delete(logFile)
                         Catch
                         End Try
                     End If
                 Next
-                ' Remove empty directories
                 Try
-                    If Directory.GetFileSystemEntries(dir).Length = 0 Then
-                        Directory.Delete(dir)
+                    If System.IO.Directory.GetFileSystemEntries(logDir).Length = 0 Then
+                        System.IO.Directory.Delete(logDir)
                     End If
                 Catch
                 End Try
