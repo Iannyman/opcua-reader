@@ -9,9 +9,15 @@ Public Class MainForm
     Private ReadOnly _serverContent As New Dictionary(Of String, ServerTabContent)()
     Private _sqlService As SqlService
     Private _sqlConnected As Boolean = False
+    Private _shutdownReason As String = "UserClose"
+    Private _lastUnhandledException As Exception = Nothing
 
     Private Sub MainForm_Load(sender As Object, e As EventArgs) Handles Me.Load
+        AddHandler Application.ThreadException, AddressOf OnUIThreadException
+        AddHandler AppDomain.CurrentDomain.UnhandledException, AddressOf OnBackgroundThreadException
+
         _logger = New FileLogger()
+        _logger.EnsureServer("_Application")
         _manager = New OpcUaManager(_logger)
 
         Me.Icon = New Icon(IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "icon.ico"))
@@ -357,6 +363,14 @@ Public Class MainForm
 
     Private Async Sub MainForm_FormClosing(sender As Object, e As FormClosingEventArgs) Handles Me.FormClosing
         Try
+            _logger?.Log("_Application", $"Application shutting down. Reason: {_shutdownReason}")
+            If _lastUnhandledException IsNot Nothing Then
+                _logger?.Log("_Application", $"Unhandled exception: {_lastUnhandledException.GetType().Name} — {_lastUnhandledException.Message}")
+                _logger?.Log("_Application", _lastUnhandledException.StackTrace)
+            End If
+        Catch
+        End Try
+        Try
             Await _manager.DisconnectAllAsync()
         Catch
         End Try
@@ -364,6 +378,28 @@ Public Class MainForm
             _logger?.Dispose()
         Catch
         End Try
+    End Sub
+
+    Private Sub OnUIThreadException(sender As Object, e As System.Threading.ThreadExceptionEventArgs)
+        _shutdownReason = "UnhandledError"
+        _lastUnhandledException = e.Exception
+        Try
+            _logger?.Log("_Application", $"Unhandled UI thread exception: {e.Exception.GetType().Name} — {e.Exception.Message}")
+            _logger?.Log("_Application", e.Exception.StackTrace)
+        Catch
+        End Try
+    End Sub
+
+    Private Sub OnBackgroundThreadException(sender As Object, e As UnhandledExceptionEventArgs)
+        _shutdownReason = "UnhandledError"
+        If TypeOf e.ExceptionObject Is Exception Then
+            _lastUnhandledException = DirectCast(e.ExceptionObject, Exception)
+            Try
+                _logger?.Log("_Application", $"Unhandled background exception: {_lastUnhandledException.GetType().Name} — {_lastUnhandledException.Message}")
+                _logger?.Log("_Application", _lastUnhandledException.StackTrace)
+            Catch
+            End Try
+        End If
     End Sub
 
     ' ─────────────────────────────────────────
