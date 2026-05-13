@@ -306,6 +306,7 @@ Public Class MainForm
         End If
 
         Dim timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
+        log.Items.Clear()
         log.AddItem($"[{timestamp}] Read data triggerd:")
         _logger?.Log(serverName, "Read data triggered:")
 
