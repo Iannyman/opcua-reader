@@ -441,7 +441,7 @@ Public Class MainForm
                 Dim label = If(String.IsNullOrEmpty(nodeCfg.DisplayName), nodeCfg.NodeId, nodeCfg.DisplayName)
                 Dim value As String = Nothing
                 If readValues.ContainsKey(label) Then
-                    value = If(readValues(label)?.Value?.ToString(), "")
+                    value = readValues(label).Value?.ToString()
                 End If
 
                 If nodeCfg.NodeId = config.SwoIdentNode AndAlso config.SwoIdentNode <> "" Then
@@ -451,8 +451,23 @@ Public Class MainForm
                 Else
                     nodes.Add(New Dictionary(Of String, String) From {
                         {"nodeId", nodeCfg.NodeId},
-                        {"value", If(value, "")}
+                        {"value", value}
                     })
+                End If
+            Next
+
+            If String.IsNullOrEmpty(swoIdent) Then
+                LogToServerTab(serverName, "SQL SKIP: SWO_IDENT value is empty")
+                Return
+            End If
+            If String.IsNullOrEmpty(equipId) Then
+                LogToServerTab(serverName, "SQL SKIP: EQUIP_ID value is empty")
+                Return
+            End If
+            For Each node In nodes
+                If String.IsNullOrEmpty(node("value")) Then
+                    LogToServerTab(serverName, $"SQL SKIP: Node {node("nodeId")} has empty value")
+                    Return
                 End If
             Next
 
