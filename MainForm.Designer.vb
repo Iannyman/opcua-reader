@@ -26,6 +26,7 @@ Partial Class MainForm
         Me.tabSelector = New MaterialSkin.Controls.MaterialTabSelector()
         Me.lblStatus = New System.Windows.Forms.Label()
         Me.lblSqlStatus = New System.Windows.Forms.Label()
+        Me.lblVersion = New System.Windows.Forms.Label()
         Me.pnlStatus = New System.Windows.Forms.Panel()
         Me.tabMain.SuspendLayout()
         Me.tabPageOverview.SuspendLayout()
@@ -168,10 +169,25 @@ Partial Class MainForm
         Me.lblSqlStatus.TabIndex = 1
         Me.lblSqlStatus.Text = "SQL: Testing..."
         '
+        'lblVersion
+        '
+        Me.lblVersion.AutoSize = True
+        Me.lblVersion.BackColor = System.Drawing.Color.Transparent
+        Me.lblVersion.Dock = System.Windows.Forms.DockStyle.Right
+        Me.lblVersion.Font = New System.Drawing.Font("Segoe UI", 8.5!)
+        Me.lblVersion.ForeColor = System.Drawing.Color.FromArgb(CType(CType(130, Byte), Integer), CType(CType(140, Byte), Integer), CType(CType(155, Byte), Integer))
+        Me.lblVersion.Location = New System.Drawing.Point(900, 0)
+        Me.lblVersion.Name = "lblVersion"
+        Me.lblVersion.Padding = New System.Windows.Forms.Padding(0, 5, 14, 0)
+        Me.lblVersion.Size = New System.Drawing.Size(62, 20)
+        Me.lblVersion.TabIndex = 2
+        Me.lblVersion.Text = "v1.0.0"
+        '
         'pnlStatus
         '
         Me.pnlStatus.BackColor = System.Drawing.Color.FromArgb(CType(CType(24, Byte), Integer), CType(CType(24, Byte), Integer), CType(CType(24, Byte), Integer))
         Me.pnlStatus.Controls.Add(Me.lblSqlStatus)
+        Me.pnlStatus.Controls.Add(Me.lblVersion)
         Me.pnlStatus.Controls.Add(Me.lblStatus)
         Me.pnlStatus.Dock = System.Windows.Forms.DockStyle.Bottom
         Me.pnlStatus.Location = New System.Drawing.Point(3, 526)
@@ -213,5 +229,6 @@ Partial Class MainForm
     Friend WithEvents pnlStatus As System.Windows.Forms.Panel
     Friend WithEvents lblStatus As System.Windows.Forms.Label
     Friend WithEvents lblSqlStatus As System.Windows.Forms.Label
+    Friend WithEvents lblVersion As System.Windows.Forms.Label
 
 End Class
