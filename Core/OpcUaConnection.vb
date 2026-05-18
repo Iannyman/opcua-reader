@@ -9,6 +9,7 @@ Public Class OpcUaConnection
     Private _config As ApplicationConfiguration
     Private _subscription As Subscription
     Private _isReconnecting As Boolean = False
+    Private _isProcessingTrigger As Boolean = False
     Private ReadOnly _logger As FileLogger
 
     Public Property ServerConfig As ServerConfig
@@ -111,8 +112,13 @@ Public Class OpcUaConnection
                 End Try
 
                 If intVal = 1 Then
-                    Dim readResults = Await ReadMultipleNodesAsync(ServerConfig.NodesToReadOnTrigger)
-                    RaiseEvent DataTriggered(ServerConfig.Name, readResults)
+                    _isProcessingTrigger = True
+                    Try
+                        Dim readResults = Await ReadMultipleNodesAsync(ServerConfig.NodesToReadOnTrigger)
+                        RaiseEvent DataTriggered(ServerConfig.Name, readResults)
+                    Finally
+                        _isProcessingTrigger = False
+                    End Try
                 End If
             End If
         Catch ex As Exception
@@ -171,13 +177,16 @@ Public Class OpcUaConnection
             Catch
             End Try
 
-            If intVal = 1 Then
+            If intVal = 1 AndAlso Not _isProcessingTrigger Then
+                _isProcessingTrigger = True
                 Task.Run(Async Function()
                              Try
                                  Dim readResults = Await ReadMultipleNodesAsync(ServerConfig.NodesToReadOnTrigger)
                                  RaiseEvent DataTriggered(ServerConfig.Name, readResults)
                              Catch ex As Exception
                                  Log($"Trigger handler error: {ex.Message}")
+                             Finally
+                                 _isProcessingTrigger = False
                              End Try
                          End Function)
             End If
