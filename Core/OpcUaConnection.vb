@@ -312,7 +312,6 @@ Public Class OpcUaConnection
             While _isReconnecting
                 Try
                     Await ReconnectAsync()
-                    _isReconnecting = True
                     If IsConnected Then
                         RaiseEvent ConnectionRestored(ServerConfig.Name)
                         Return
@@ -387,6 +386,7 @@ Public Class OpcUaConnection
     ' ─────────────────────────────────────────
     Public Async Function ReconnectAsync() As Task
         Await DisconnectAsync()
+        _isReconnecting = True
         Await ConnectAsync()
     End Function
 
