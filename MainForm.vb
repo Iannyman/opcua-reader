@@ -488,8 +488,8 @@ Public Class MainForm
             If success = 1 Then
                 LogToServerTab(serverName, $"SQL OK: {message}")
                 ' Uncomment to reset the trigger to 0 after a successful SQL insert:
-                ' Dim conn = _manager.GetConnection(serverName)
-                ' If conn IsNot Nothing Then Await conn.WriteTriggerResetAsync()
+                Dim conn = _manager.GetConnection(serverName)
+                If conn IsNot Nothing Then Await conn.WriteTriggerResetAsync()
             Else
                 LogToServerTab(serverName, $"SQL ERROR: {message}")
             End If
