@@ -113,12 +113,8 @@ Public Class OpcUaConnection
 
                 If intVal = 1 Then
                     _isProcessingTrigger = True
-                    Try
-                        Dim readResults = Await ReadMultipleNodesAsync(ServerConfig.NodesToReadOnTrigger)
-                        RaiseEvent DataTriggered(ServerConfig.Name, readResults)
-                    Finally
-                        _isProcessingTrigger = False
-                    End Try
+                    Dim readResults = Await ReadMultipleNodesAsync(ServerConfig.NodesToReadOnTrigger)
+                    RaiseEvent DataTriggered(ServerConfig.Name, readResults)
                 End If
             End If
         Catch ex As Exception
@@ -185,7 +181,6 @@ Public Class OpcUaConnection
                                  RaiseEvent DataTriggered(ServerConfig.Name, readResults)
                              Catch ex As Exception
                                  Log($"Trigger handler error: {ex.Message}")
-                             Finally
                                  _isProcessingTrigger = False
                              End Try
                          End Function)
@@ -249,13 +244,16 @@ Public Class OpcUaConnection
 
             If response IsNot Nothing AndAlso response.Results IsNot Nothing AndAlso response.Results.Count > 0 Then
                 If StatusCode.IsGood(response.Results(0)) Then
+                    _isProcessingTrigger = False
                     Log("Trigger reset to 0.")
                 Else
+                    _isProcessingTrigger = False
                     Log($"Reset failed: {response.Results(0)}")
                 End If
             End If
 
         Catch ex As Exception
+            _isProcessingTrigger = False
             Log($"Write error: {ex.Message}")
         End Try
     End Function
