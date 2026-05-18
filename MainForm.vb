@@ -22,6 +22,9 @@ Public Class MainForm
 
         Me.Icon = New Icon(IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "icon.ico"))
 
+        Dim ver = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version
+        lblVersion.Text = $"v{ver.Major}.{ver.Minor}.{ver.Build}"
+
         ' Dark "Neon Industrial" color scheme
         Dim SkinManager = MaterialSkinManager.Instance
         SkinManager.AddFormToManage(Me)
@@ -59,6 +62,7 @@ Public Class MainForm
         AddHandler _manager.ConnectionRestored, AddressOf OnConnectionRestored
 
         TestSqlConnectionAsync()
+        btnConnect_Click(Nothing, EventArgs.Empty)
     End Sub
 
     Private Sub StyleDataGridView()
