@@ -176,8 +176,6 @@ Public Class OpcUaConnection
                              Try
                                  Dim readResults = Await ReadMultipleNodesAsync(ServerConfig.NodesToReadOnTrigger)
                                  RaiseEvent DataTriggered(ServerConfig.Name, readResults)
-                                 ' WriteTriggerResetAsync is commented out to avoid BadTypeMismatch errors while debugging.
-                                 ' Await WriteTriggerResetAsync()
                              Catch ex As Exception
                                  Log($"Trigger handler error: {ex.Message}")
                              End Try
@@ -190,7 +188,7 @@ Public Class OpcUaConnection
     End Sub
 
     ' ─────────────────────────────────────────
-    ' WRITE0 TO TRIGGER VARIABLE
+    ' WRITE 0 TO TRIGGER VARIABLE
     ' ─────────────────────────────────────────
     Public Async Function WriteTriggerResetAsync() As Task
         Try
