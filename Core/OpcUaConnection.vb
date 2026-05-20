@@ -9,7 +9,7 @@ Public Class OpcUaConnection
     Private _config As ApplicationConfiguration
     Private _subscription As Subscription
     Private _isReconnecting As Boolean = False
-    Private _isProcessingTrigger As Boolean = False
+    Private _isProcessingTrigger As Integer = 0 ' 0=false, 1=true — use Interlocked
     Private ReadOnly _logger As FileLogger
 
     Public Property ServerConfig As ServerConfig
@@ -111,8 +111,7 @@ Public Class OpcUaConnection
                 Catch
                 End Try
 
-                If intVal = 1 Then
-                    _isProcessingTrigger = True
+                If intVal = 1 AndAlso Interlocked.CompareExchange(_isProcessingTrigger, 1, 0) = 0 Then
                     Dim readResults = Await ReadMultipleNodesAsync(ServerConfig.NodesToReadOnTrigger)
                     RaiseEvent DataTriggered(ServerConfig.Name, readResults)
                 End If
@@ -173,15 +172,14 @@ Public Class OpcUaConnection
             Catch
             End Try
 
-            If intVal = 1 AndAlso Not _isProcessingTrigger Then
-                _isProcessingTrigger = True
+            If intVal = 1 AndAlso Interlocked.CompareExchange(_isProcessingTrigger, 1, 0) = 0 Then
                 Task.Run(Async Function()
                              Try
                                  Dim readResults = Await ReadMultipleNodesAsync(ServerConfig.NodesToReadOnTrigger)
                                  RaiseEvent DataTriggered(ServerConfig.Name, readResults)
                              Catch ex As Exception
                                  Log($"Trigger handler error: {ex.Message}")
-                                 _isProcessingTrigger = False
+                                 Interlocked.Exchange(_isProcessingTrigger, 0)
                              End Try
                          End Function)
             End If
@@ -244,16 +242,16 @@ Public Class OpcUaConnection
 
             If response IsNot Nothing AndAlso response.Results IsNot Nothing AndAlso response.Results.Count > 0 Then
                 If StatusCode.IsGood(response.Results(0)) Then
-                    _isProcessingTrigger = False
+                    Interlocked.Exchange(_isProcessingTrigger, 0)
                     Log("Trigger reset to 0.")
                 Else
-                    _isProcessingTrigger = False
+                    Interlocked.Exchange(_isProcessingTrigger, 0)
                     Log($"Reset failed: {response.Results(0)}")
                 End If
             End If
 
         Catch ex As Exception
-            _isProcessingTrigger = False
+            Interlocked.Exchange(_isProcessingTrigger, 0)
             Log($"Write error: {ex.Message}")
         End Try
     End Function

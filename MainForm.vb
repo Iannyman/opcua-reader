@@ -11,6 +11,7 @@ Public Class MainForm
     Private _sqlConnected As Boolean = False
     Private _shutdownReason As String = "UserClose"
     Private _lastUnhandledException As Exception = Nothing
+    Private Shared ReadOnly _gridBoldFont As New Font("Segoe UI Semibold", 9.0F, FontStyle.Bold)
 
     Private Sub MainForm_Load(sender As Object, e As EventArgs) Handles Me.Load
         AddHandler Application.ThreadException, AddressOf OnUIThreadException
@@ -270,13 +271,13 @@ Public Class MainForm
             Select Case e.Value.ToString()
                 Case "Connected"
                     e.CellStyle.ForeColor = Color.FromArgb(0, 230, 118)
-                    e.CellStyle.Font = New Font("Segoe UI Semibold", 9.0F, FontStyle.Bold)
+                    e.CellStyle.Font = _gridBoldFont
                 Case "Disconnected"
                     e.CellStyle.ForeColor = Color.FromArgb(255, 82, 82)
-                    e.CellStyle.Font = New Font("Segoe UI Semibold", 9.0F, FontStyle.Bold)
+                    e.CellStyle.Font = _gridBoldFont
                 Case "Reconnecting"
                     e.CellStyle.ForeColor = Color.FromArgb(255, 193, 7)
-                    e.CellStyle.Font = New Font("Segoe UI Semibold", 9.0F, FontStyle.Bold)
+                    e.CellStyle.Font = _gridBoldFont
             End Select
         ElseIf colName = "colEndpoint" AndAlso e.Value IsNot Nothing Then
             e.CellStyle.ForeColor = Color.FromArgb(120, 130, 140)
