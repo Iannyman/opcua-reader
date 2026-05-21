@@ -245,13 +245,13 @@ Public Class OpcUaConnection
                     Interlocked.Exchange(_isProcessingTrigger, 0)
                     Log("Trigger reset to 0.")
                 Else
-                    Interlocked.Exchange(_isProcessingTrigger, 0)
                     Log($"Reset failed: {response.Results(0)}")
                 End If
+            Else
+                Log("Empty write response — trigger not reset.")
             End If
 
         Catch ex As Exception
-            Interlocked.Exchange(_isProcessingTrigger, 0)
             Log($"Write error: {ex.Message}")
         End Try
     End Function
