@@ -8,9 +8,21 @@ Public Class OpcUaConnection
     Private _session As ISession
     Private _config As ApplicationConfiguration
     Private _subscription As Subscription
-    Private _isReconnecting As Boolean = False
+    Private _reconnectHandler As SessionReconnectHandler
+    Private ReadOnly _handlerLock As New Object()
+    Private ReadOnly _gate As New SemaphoreSlim(1, 1)
     Private _isProcessingTrigger As Integer = 0 ' 0=false, 1=true — use Interlocked
     Private ReadOnly _logger As FileLogger
+
+    ' Auto-reconnect timing (ms). ReconnectPeriod is the initial/backoff base;
+    ' ReconnectMaxPeriod caps the exponential backoff used by SessionReconnectHandler.
+    Private Const ReconnectPeriod As Integer = 5000
+    Private Const ReconnectMaxPeriod As Integer = 60000
+
+    ' Hard deadline (ms) for graceful disconnect teardown. On a dead channel the
+    ' close/delete service calls can otherwise each wait OperationTimeout (15s);
+    ' this bounds manual Reconnect/Disconnect/shutdown so the UI never stalls.
+    Private Const DisconnectTimeoutMs As Integer = 3000
 
     Public Property ServerConfig As ServerConfig
     Public Property IsConnected As Boolean = False
@@ -35,7 +47,18 @@ Public Class OpcUaConnection
     ' CONNECT
     ' ─────────────────────────────────────────
     Public Async Function ConnectAsync() As Task
-        _config = Await CreateApplicationConfigurationAsync()
+        Await _gate.WaitAsync()
+        Try
+            Await ConnectCoreAsync()
+        Finally
+            _gate.Release()
+        End Try
+    End Function
+
+    Private Async Function ConnectCoreAsync() As Task
+        If _config Is Nothing Then
+            _config = Await CreateApplicationConfigurationAsync()
+        End If
 
         ' Step1 - discover endpoints
         Dim uri = New Uri(ServerConfig.EndpointUrl)
@@ -82,6 +105,12 @@ Public Class OpcUaConnection
 
         If IsConnected Then
             _session.KeepAliveInterval = 5000
+            ' Reactivate the same session on reconnect so the PLC keeps a single
+            ' session (the S7-1200 allows only ~2-4). TransferSubscriptions is left
+            ' OFF because the S7-1200 doesn't support it; after a reconnect the
+            ' subscription is re-established explicitly in EnsureSubscriptionAsync,
+            ' which avoids racing the SDK for subscription ownership.
+            _session.TransferSubscriptionsOnReconnect = False
             AddHandler _session.KeepAlive, AddressOf OnKeepAlive
             Log($"Connected to {ServerConfig.EndpointUrl}")
             Await CheckTriggerInitialStateAsync()
@@ -293,99 +322,206 @@ Public Class OpcUaConnection
     ' KEEP-ALIVE WATCHDOG
     ' ─────────────────────────────────────────
     Private Sub OnKeepAlive(sender As ISession, e As KeepAliveEventArgs)
-        If Not IsConnected Then Return
         If sender.KeepAliveStopped OrElse StatusCode.IsBad(e.Status) Then
+            Dim wasConnected = IsConnected
             IsConnected = False
-            RaiseEvent ConnectionLost(ServerConfig.Name)
-            Task.Run(Async Function()
-                         Await AutoReconnectLoopAsync()
-                     End Function)
+            ' Notify the UI only once per outage, not on every dead keep-alive tick.
+            If wasConnected Then
+                RaiseEvent ConnectionLost(ServerConfig.Name)
+            End If
+            ' Self-healing: if no reconnect cycle is running (e.g. a previous
+            ' cycle ended without restoring the session), start a new one.
+            ' StartReconnect is a no-op while a cycle is already active, so this
+            ' is what eventually rescues a client stuck on "Reconnecting".
+            StartReconnect()
         End If
     End Sub
 
-    Private Async Function AutoReconnectLoopAsync() As Task
-        If _isReconnecting Then Return
-        _isReconnecting = True
+    ' ─────────────────────────────────────────
+    ' AUTO RECONNECT
+    ' Reactivates the existing session over a new secure channel via the SDK
+    ' SessionReconnectHandler, so the PLC keeps a single session instead of
+    ' accumulating duplicates on every drop (the S7-1200 allows only ~2-4).
+    ' The subscription is re-bound explicitly in EnsureSubscriptionAsync after a
+    ' reconnect, since the S7-1200 has no TransferSubscriptions service.
+    ' ─────────────────────────────────────────
+    Private Sub StartReconnect()
+        SyncLock _handlerLock
+            If _reconnectHandler IsNot Nothing Then Return
+            If _session Is Nothing Then Return
+            Try
+                _reconnectHandler = New SessionReconnectHandler(
+                    CType(Nothing, ITelemetryContext), True, ReconnectMaxPeriod)
+                _reconnectHandler.BeginReconnect(_session, ReconnectPeriod, AddressOf OnReconnectComplete)
+                Log($"Auto-reconnect started (period={ReconnectPeriod}ms, max={ReconnectMaxPeriod}ms).")
+            Catch ex As Exception
+                Log($"Failed to start auto-reconnect: {ex.Message}")
+                CancelReconnectHandler()
+            End Try
+        End SyncLock
+    End Sub
+
+    Private Async Sub OnReconnectComplete(sender As Object, e As EventArgs)
+        Dim restored As Boolean = False
+
+        SyncLock _handlerLock
+            Dim handler = TryCast(sender, SessionReconnectHandler)
+            ' Ignore callbacks from a handler we already discarded.
+            If handler Is Nothing OrElse handler IsNot _reconnectHandler Then Return
+
+            Dim newSession = _reconnectHandler.Session
+            CancelReconnectHandler()
+
+            If newSession IsNot Nothing Then
+                _session = newSession
+                RemoveHandler _session.KeepAlive, AddressOf OnKeepAlive
+                AddHandler _session.KeepAlive, AddressOf OnKeepAlive
+                IsConnected = _session.Connected
+                restored = IsConnected
+            End If
+        End SyncLock
+
+        If Not restored Then
+            Log("Auto-reconnect completed without a live session; re-arming reconnect cycle.")
+            StartReconnect()
+            Return
+        End If
+
+        ' The session was reactivated. On a transient drop the existing subscription
+        ' is still bound to the same session object and keeps working; on a longer
+        ' outage the session was recreated, so rebuild the subscription on it. The
+        ' S7-1200 has no TransferSubscriptions, so this is how we keep triggers alive.
         Try
-            While _isReconnecting
-                Try
-                    Await ReconnectAsync()
-                    If IsConnected Then
-                        RaiseEvent ConnectionRestored(ServerConfig.Name)
-                        Return
-                    End If
-                Catch
-                End Try
-                Await Task.Delay(5000)
-            End While
-        Finally
-            _isReconnecting = False
+            Await EnsureSubscriptionAsync()
+        Catch ex As Exception
+            Log($"Subscription reconciliation after reconnect failed: {ex.Message}")
         End Try
+
+        Log("Auto-reconnect succeeded — session reactivated, subscription active.")
+        RaiseEvent ConnectionRestored(ServerConfig.Name)
+    End Sub
+
+    ' After a reconnect, makes sure exactly one active subscription is bound to the
+    ' current session. No-op on the common reactivation path (same session object);
+    ' rebuilds the subscription when the session was recreated.
+    Private Async Function EnsureSubscriptionAsync() As Task
+        If _subscription IsNot Nothing AndAlso
+           _subscription.Session Is _session AndAlso _subscription.Created Then
+            Return
+        End If
+
+        If _subscription IsNot Nothing Then
+            Try
+                _subscription.Dispose()
+            Catch
+            End Try
+            _subscription = Nothing
+        End If
+
+        Await SetupSubscriptionAsync()
+        Log("Subscription re-established on reactivated session.")
     End Function
+
+    ' Cancels and disposes any in-flight reconnect handler. Safe to call under
+    ' _handlerLock (SyncLock/Monitor is reentrant on the calling thread).
+    Private Sub CancelReconnectHandler()
+        SyncLock _handlerLock
+            If _reconnectHandler Is Nothing Then Return
+            Try
+                _reconnectHandler.CancelReconnect()
+            Catch
+            End Try
+            Try
+                _reconnectHandler.Dispose()
+            Catch
+            End Try
+            _reconnectHandler = Nothing
+        End SyncLock
+    End Sub
 
     ' ─────────────────────────────────────────
     ' DISCONNECT
     ' ─────────────────────────────────────────
     Public Async Function DisconnectAsync() As Task
-        _isReconnecting = False
+        Await _gate.WaitAsync()
         Try
-            If _subscription IsNot Nothing Then
-                ' Disable publishing to reduce server-side notifications during shutdown
-                Try
-                    _subscription.PublishingEnabled = False
-                    Await _subscription.ApplyChangesAsync()
-                Catch exPub As Exception
-                    Log($"Failed to disable publishing: {exPub}")
-                End Try
-
-                Try
-                    Await _subscription.DeleteAsync(True)
-                Catch ex As TaskCanceledException
-                    ' ignore cancellation during shutdown
-                Catch ex As ServiceResultException
-                    Log($"Subscription delete error: {ex}")
-                Catch ex As Exception
-                    Log($"Subscription delete error: {ex}")
-                Finally
-                    Try
-                        _subscription.Dispose()
-                    Catch
-                    End Try
-                    _subscription = Nothing
-                End Try
-            End If
-
-            If _session IsNot Nothing Then
-                Try
-                    Await _session.CloseAsync()
-                Catch ex As TaskCanceledException
-                    ' ignore cancellation during shutdown
-                Catch ex As ServiceResultException
-                    Log($"Session close error: {ex}")
-                Catch ex As Exception
-                    Log($"Session close error: {ex}")
-                Finally
-                    Try
-                        _session.Dispose()
-                    Catch
-                    End Try
-                    _session = Nothing
-                End Try
-            End If
-        Catch ex As Exception
-            Log($"Disconnect error: {ex}")
+            Await DisconnectCoreAsync()
         Finally
-            IsConnected = False
+            _gate.Release()
         End Try
+    End Function
+
+    Private Async Function DisconnectCoreAsync() As Task
+        CancelReconnectHandler()
+        Using cts = New CancellationTokenSource(DisconnectTimeoutMs)
+            Try
+                If _subscription IsNot Nothing Then
+                    ' Disable publishing to reduce server-side notifications during shutdown
+                    Try
+                        _subscription.PublishingEnabled = False
+                        Await _subscription.ApplyChangesAsync(cts.Token)
+                    Catch exPub As Exception
+                        Log($"Failed to disable publishing: {exPub}")
+                    End Try
+
+                    Try
+                        Await _subscription.DeleteAsync(True, cts.Token)
+                    Catch ex As OperationCanceledException
+                        ' teardown timed out (e.g. dead channel) — fall through to dispose
+                    Catch ex As ServiceResultException
+                        Log($"Subscription delete error: {ex}")
+                    Catch ex As Exception
+                        Log($"Subscription delete error: {ex}")
+                    Finally
+                        Try
+                            _subscription.Dispose()
+                        Catch
+                        End Try
+                        _subscription = Nothing
+                    End Try
+                End If
+
+                If _session IsNot Nothing Then
+                    Try
+                        RemoveHandler _session.KeepAlive, AddressOf OnKeepAlive
+                    Catch
+                    End Try
+                    Try
+                        Await _session.CloseAsync(0, True, cts.Token)
+                    Catch ex As OperationCanceledException
+                        ' teardown timed out (e.g. dead channel) — fall through to dispose
+                    Catch ex As ServiceResultException
+                        Log($"Session close error: {ex}")
+                    Catch ex As Exception
+                        Log($"Session close error: {ex}")
+                    Finally
+                        Try
+                            _session.Dispose()
+                        Catch
+                        End Try
+                        _session = Nothing
+                    End Try
+                End If
+            Catch ex As Exception
+                Log($"Disconnect error: {ex}")
+            Finally
+                IsConnected = False
+            End Try
+        End Using
     End Function
 
     ' ─────────────────────────────────────────
     ' RECONNECT
     ' ─────────────────────────────────────────
     Public Async Function ReconnectAsync() As Task
-        Await DisconnectAsync()
-        _isReconnecting = True
-        Await ConnectAsync()
+        Await _gate.WaitAsync()
+        Try
+            CancelReconnectHandler()
+            Await DisconnectCoreAsync()
+            Await ConnectCoreAsync()
+        Finally
+            _gate.Release()
+        End Try
     End Function
 
     Private Async Function CreateApplicationConfigurationAsync() As Task(Of ApplicationConfiguration)

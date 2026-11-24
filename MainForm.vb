@@ -113,7 +113,10 @@ Public Class MainForm
         Catch ex As Exception
             _logger?.Log(serverName, $"Connect failed: {ex.Message}")
             MessageBox.Show($"{serverName} connect failed: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error)
-            c.btnConnect.Enabled = True
+            ' The session may actually be up (e.g. subscription setup failed after
+            ' session creation) — show the real state, not the operation outcome.
+            Dim conn = _manager.GetConnection(serverName)
+            SetServerConnected(serverName, conn IsNot Nothing AndAlso conn.IsConnected)
         End Try
     End Sub
 
@@ -146,7 +149,9 @@ Public Class MainForm
         Catch ex As Exception
             _logger?.Log(serverName, $"Reconnect failed: {ex.Message}")
             MessageBox.Show($"{serverName} reconnect failed: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error)
-            SetServerConnected(serverName, False)
+            ' The session may actually be up despite the failure — show the real state.
+            Dim conn = _manager.GetConnection(serverName)
+            SetServerConnected(serverName, conn IsNot Nothing AndAlso conn.IsConnected)
             lblStatus.Text = $"{serverName}: Reconnect failed"
         End Try
     End Sub
@@ -216,22 +221,38 @@ Public Class MainForm
         btnDisconnect.Enabled = True
         lblStatus.Text = "Connecting all..."
 
+        Dim connectError As Exception = Nothing
         Try
             Await _manager.ConnectAllAsync()
-            lblStatus.Text = "Connected — subscriptions active"
-            For Each kv In _manager.GetServerConfigs()
-                SetServerConnected(kv.Name, True)
-            Next
         Catch ex As Exception
-            Dim msg As String = ex.Message
-            If TypeOf ex Is AggregateException Then
-                msg = CType(ex, AggregateException).Flatten().InnerExceptions(0).Message
+            connectError = ex
+        End Try
+
+        ' Sync the Overview grid with the actual per-server state — ConnectAllAsync
+        ' throws if ANY server fails, and a blanket "Disconnected" would leave
+        ' healthy servers stuck on the wrong status.
+        Dim anyConnected As Boolean = False
+        For Each kv In _manager.GetServerConfigs()
+            Dim conn = _manager.GetConnection(kv.Name)
+            Dim connected = conn IsNot Nothing AndAlso conn.IsConnected
+            SetServerConnected(kv.Name, connected)
+            If connected Then anyConnected = True
+        Next
+
+        If connectError Is Nothing Then
+            lblStatus.Text = "Connected — subscriptions active"
+        Else
+            Dim msg As String = connectError.Message
+            If TypeOf connectError Is AggregateException Then
+                msg = CType(connectError, AggregateException).Flatten().InnerExceptions(0).Message
             End If
             MessageBox.Show($"Failed to connect: {msg}", "Connection error", MessageBoxButtons.OK, MessageBoxIcon.Error)
-            lblStatus.Text = "Connection failed"
-            btnConnect.Enabled = True
-            btnDisconnect.Enabled = False
-        End Try
+            lblStatus.Text = If(anyConnected, "Partially connected", "Connection failed")
+            ' Retry via the global button only when nothing is connected — it
+            ' recreates every connection object, which would orphan live sessions.
+            btnConnect.Enabled = Not anyConnected
+            btnDisconnect.Enabled = anyConnected
+        End If
     End Sub
 
     Private Async Sub btnDisconnect_Click(sender As Object, e As EventArgs) Handles btnDisconnect.Click
