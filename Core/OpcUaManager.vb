@@ -16,6 +16,14 @@ Public Class OpcUaManager
     Public Event ConnectionRestored(serverName As String)
 
     Public Sub AddServer(config As ServerConfig)
+        ' One connection object per server for the app's lifetime. Replacing an
+        ' existing one would orphan it with its live PLC session (the S7-1200
+        ' allows only ~2-4) and leave a zombie subscription still firing events.
+        If _connections.ContainsKey(config.Name) Then
+            _logger?.Log(config.Name, "AddServer: connection already exists — reusing it.")
+            Return
+        End If
+
         Dim conn = New OpcUaConnection(config, _logger)
         AddHandler conn.DataTriggered, AddressOf OnConnectionDataTriggered
         AddHandler conn.ConnectionLost, Sub(name) RaiseEvent ConnectionLost(name)
