@@ -455,9 +455,18 @@ Public Class MainForm
     ' ─────────────────────────────────────────
     Private Async Sub BuildAndSendPayloadAsync(serverName As String,
                                                 readValues As Dictionary(Of String, DataValue))
+        Dim failureConn As OpcUaConnection = Nothing
         Try
             Dim config = _manager.GetServerConfigs().FirstOrDefault(Function(c) c.Name = serverName)
             If config Is Nothing Then Return
+            Dim conn = _manager.GetConnection(serverName)
+
+            ' Validation skips and payload build errors can never succeed on retry —
+            ' release the trigger so unusable data does not block the machine.
+            ' SQL errors are handled differently below: hold and retry.
+            Dim AbortTrigger = Async Sub()
+                                 If conn IsNot Nothing Then Await conn.AbortTriggerProcessingAsync()
+                               End Sub
 
             Dim swoIdent As String = ""
             Dim equipId As String = ""
@@ -484,15 +493,18 @@ Public Class MainForm
 
             If String.IsNullOrEmpty(swoIdent) Then
                 LogToServerTab(serverName, "SQL SKIP: SWO_IDENT value is empty")
+                AbortTrigger()
                 Return
             End If
             If String.IsNullOrEmpty(equipId) Then
                 LogToServerTab(serverName, "SQL SKIP: EQUIP_ID value is empty")
+                AbortTrigger()
                 Return
             End If
             For Each node In nodes
                 If String.IsNullOrEmpty(node("value")) Then
                     LogToServerTab(serverName, $"SQL SKIP: Node {node("nodeId")} has empty value")
+                    AbortTrigger()
                     Return
                 End If
             Next
@@ -506,22 +518,47 @@ Public Class MainForm
 
             Dim payload = JsonConvert.SerializeObject(payloadObj)
 
-            Dim result = Await _sqlService.InsertZsbDataAsync(payload)
-            Dim resp = JsonConvert.DeserializeObject(Of Dictionary(Of String, Object))(result)
-            Dim success = If(resp IsNot Nothing AndAlso resp.ContainsKey("success"), Convert.ToInt32(resp("success")), 0)
-            Dim message = If(resp IsNot Nothing AndAlso resp.ContainsKey("message"), resp("message")?.ToString(), result)
+            ' Hold the trigger (machine waits) until the insert goes through SQL.
+            ' Every failure retries — transport errors and procedure rejections
+            ' alike — so no part is ever lost to a SQL outage.
+            Dim success = 0
+            Dim message As String = ""
+            Do Until success = 1
+                Try
+                    Dim result = Await _sqlService.InsertZsbDataAsync(payload)
+                    Dim resp = JsonConvert.DeserializeObject(Of Dictionary(Of String, Object))(result)
+                    success = If(resp IsNot Nothing AndAlso resp.ContainsKey("success"), Convert.ToInt32(resp("success")), 0)
+                    message = If(resp IsNot Nothing AndAlso resp.ContainsKey("message"), resp("message")?.ToString(), result)
+                Catch ex As Exception
+                    success = 0
+                    message = ex.Message
+                End Try
+                If success <> 1 Then
+                    LogToServerTab(serverName, $"SQL ERROR: {message} — trigger held, retrying in 30s")
+                    Await Task.Delay(30000)
+                End If
+            Loop
 
-            If success = 1 Then
-                LogToServerTab(serverName, $"SQL OK: {message}")
-                ' Uncomment to reset the trigger to 0 after a successful SQL insert:
-                Dim conn = _manager.GetConnection(serverName)
-                If conn IsNot Nothing Then Await conn.WriteTriggerResetAsync()
-            Else
-                LogToServerTab(serverName, $"SQL ERROR: {message}")
+            LogToServerTab(serverName, $"SQL OK: {message}")
+
+            ' Only now that SQL confirmed the insert, reset the PLC trigger — and
+            ' retry until the PLC accepts it, otherwise the machine stays blocked.
+            If conn IsNot Nothing Then
+                Dim resetOk = False
+                Do Until resetOk
+                    resetOk = Await conn.WriteTriggerResetAsync()
+                    If Not resetOk Then
+                        LogToServerTab(serverName, "Trigger reset failed — retrying in 30s")
+                        Await Task.Delay(30000)
+                    End If
+                Loop
             End If
         Catch ex As Exception
             LogToServerTab(serverName, $"SQL ERROR: {ex.Message}")
+            failureConn = _manager.GetConnection(serverName)
         End Try
+        ' Await is not allowed inside a Catch — release the trigger here instead.
+        If failureConn IsNot Nothing Then Await failureConn.AbortTriggerProcessingAsync()
     End Sub
 
 End Class
