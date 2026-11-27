@@ -220,8 +220,10 @@ Public Class OpcUaConnection
 
     ' ─────────────────────────────────────────
     ' WRITE 0 TO TRIGGER VARIABLE
+    ' Returns True only when the PLC confirmed the write; the caller retries
+    ' otherwise so the machine is never left blocked on an unreset trigger.
     ' ─────────────────────────────────────────
-    Public Async Function WriteTriggerResetAsync() As Task
+    Public Async Function WriteTriggerResetAsync() As Task(Of Boolean)
         Try
             ' Read current value to determine data type
             Dim nodesToRead = New ReadValueIdCollection()
@@ -273,6 +275,7 @@ Public Class OpcUaConnection
                 If StatusCode.IsGood(response.Results(0)) Then
                     Interlocked.Exchange(_isProcessingTrigger, 0)
                     Log("Trigger reset to 0.")
+                    Return True
                 Else
                     Log($"Reset failed: {response.Results(0)}")
                 End If
@@ -283,6 +286,25 @@ Public Class OpcUaConnection
         Catch ex As Exception
             Log($"Write error: {ex.Message}")
         End Try
+        Return False
+    End Function
+
+    ' Resets the PLC trigger bit after a payload that can never succeed
+    ' (validation skip, payload build error), retrying until the PLC confirms the
+    ' write so the machine is never left blocked on an unreset trigger. The
+    ' processing flag is cleared inside WriteTriggerResetAsync only once the
+    ' write is confirmed — keeping it set meanwhile also blocks stray
+    ' reprocessing of the same skipped payload. For SQL errors the caller holds
+    ' and retries instead of aborting.
+    Public Async Function AbortTriggerProcessingAsync() As Task
+        Dim resetOk = False
+        Do Until resetOk
+            resetOk = Await WriteTriggerResetAsync()
+            If Not resetOk Then
+                Log("Trigger reset failed — retrying in 30s")
+                Await Task.Delay(30000)
+            End If
+        Loop
     End Function
 
     ' ─────────────────────────────────────────
@@ -363,6 +385,7 @@ Public Class OpcUaConnection
 
     Private Async Sub OnReconnectComplete(sender As Object, e As EventArgs)
         Dim restored As Boolean = False
+        Dim keepAliveRecovered As Boolean = False
 
         SyncLock _handlerLock
             Dim handler = TryCast(sender, SessionReconnectHandler)
@@ -378,6 +401,18 @@ Public Class OpcUaConnection
                 AddHandler _session.KeepAlive, AddressOf OnKeepAlive
                 IsConnected = _session.Connected
                 restored = IsConnected
+            ElseIf _session IsNot Nothing AndAlso
+                   _session.Connected AndAlso
+                   Not _session.KeepAliveStopped Then
+                ' SessionReconnectHandler contract with reconnectAbort:=True: when
+                ' the keep-alive recovers on its own before the first reconnect
+                ' tick, the SDK aborts the reconnect and fires this callback with
+                ' Session = null — the existing session object is still healthy.
+                ' Treating that as a failure caused an endless 5s re-arm churn and
+                ' left IsConnected stuck on False (reads returned empty data).
+                IsConnected = True
+                restored = True
+                keepAliveRecovered = True
             End If
         End SyncLock
 
@@ -387,17 +422,22 @@ Public Class OpcUaConnection
             Return
         End If
 
-        ' The session was reactivated. On a transient drop the existing subscription
-        ' is still bound to the same session object and keeps working; on a longer
-        ' outage the session was recreated, so rebuild the subscription on it. The
-        ' S7-1200 has no TransferSubscriptions, so this is how we keep triggers alive.
+        ' The session is usable again (reactivated, recreated, or keep-alive
+        ' recovered). On a transient drop the existing subscription is still bound
+        ' to the same session object and keeps working; on a longer outage the
+        ' session was recreated, so rebuild the subscription on it. The S7-1200 has
+        ' no TransferSubscriptions, so this is how we keep triggers alive.
         Try
             Await EnsureSubscriptionAsync()
         Catch ex As Exception
             Log($"Subscription reconciliation after reconnect failed: {ex.Message}")
         End Try
 
-        Log("Auto-reconnect succeeded — session reactivated, subscription active.")
+        If keepAliveRecovered Then
+            Log("Auto-reconnect: keep-alive had already recovered — existing session retained.")
+        Else
+            Log("Auto-reconnect succeeded — session reactivated, subscription active.")
+        End If
         RaiseEvent ConnectionRestored(ServerConfig.Name)
     End Sub
 
